@@ -2,6 +2,7 @@ import click
 import logging
 import subprocess
 import os
+import sys
 import json
 
 # Configure logging
@@ -30,8 +31,7 @@ def validate_output_format(ctx, param, value):
 @click.option('--framework', '-f', default='terraform', type=click.Choice(['terraform', 'cloudformation', 'kubernetes']),
               help='IaC framework to scan. Default: terraform')
 @click.option('--checkov-flags', '-cf', default='', type=str, help='Additional flags to pass to Checkov.')
-@click.option('--license-check', '-lc', is_flag=True, help='Enable license compatibility checks.  Not yet fully implemented.')
-def main(iac_path, output_format, severity, framework, checkov_flags, license_check):
+def main(iac_path, output_format, severity, framework, checkov_flags):
     """
     Analyzes Infrastructure-as-Code (IaC) templates for security misconfigurations using Checkov.
     """
@@ -56,39 +56,45 @@ def main(iac_path, output_format, severity, framework, checkov_flags, license_ch
         # Execute Checkov
         result = subprocess.run(command, capture_output=True, text=True, check=False) #Do not raise exceptions for non-zero exit codes
 
-        # Handle Checkov output
-        if result.returncode == 0:
-            logging.info("Checkov analysis completed successfully.")
-            if output_format == 'json':
-                try:
-                    json_output = json.loads(result.stdout)
-                    print(json.dumps(json_output, indent=2))  # Pretty print JSON
-                except json.JSONDecodeError as e:
-                    logging.error(f"Error decoding JSON output: {e}")
-                    print(result.stdout)  # Fallback to raw output
-            else:
-                print(result.stdout)
+        # Report Checkov output on any return code. A non-zero code is
+        # Checkov's normal findings outcome, so its stdout is the scan
+        # report in the requested format, not a failure dump.
+        if output_format == 'json':
+            try:
+                json_output = json.loads(result.stdout)
+                print(json.dumps(json_output, indent=2))  # Pretty print JSON
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding JSON output: {e}")
+                print(result.stdout)  # Fallback to raw output
         else:
-            logging.error(f"Checkov analysis failed with exit code {result.returncode}")
-            logging.error(f"Checkov stdout: {result.stdout}")
-            logging.error(f"Checkov stderr: {result.stderr}")
-            print(f"Checkov analysis failed. See logs for details.  Stdout: {result.stdout}, Stderr: {result.stderr}")
+            print(result.stdout)
 
-        if license_check:
-            logging.warning("License compatibility checks are not yet fully implemented.")
-            print("Warning: License compatibility checks are not yet fully implemented.")
+        if result.stderr:
+            logging.error(f"Checkov stderr: {result.stderr}")
+
+        # The verdict reaches this wrapper's exit code: exit with the
+        # Checkov return code, so findings and scanner errors gate.
+        if result.returncode != 0:
+            logging.error(f"Checkov exited with code {result.returncode}; its report is printed above.")
+            sys.exit(result.returncode)
+
+        logging.info("Checkov analysis completed successfully.")
 
     except FileNotFoundError:
         logging.error("Checkov executable not found.  Please ensure Checkov is installed and in your PATH.")
         print("Error: Checkov executable not found.  Please ensure Checkov is installed and in your PATH.")
+        sys.exit(1)
+    except SystemExit:
+        raise
     except Exception as e:
         logging.exception(f"An unexpected error occurred: {e}")
         print(f"An unexpected error occurred: {e}. See logs for details.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     # Usage example:
-    # iacs-IaC-Dependency-Analyzer --iac-path path/to/your/iac/code --output-format json --severity HIGH
-    # iacs-IaC-Dependency-Analyzer -i path/to/your/terraform/file.tf -o text -f terraform
-    # iacs-IaC-Dependency-Analyzer -i path/to/your/kubernetes/manifests -f kubernetes -cf "--skip-check CKV_K8S_41"
+    # python3 main.py --iac-path path/to/your/iac/code --output-format json --severity HIGH
+    # python3 main.py -i path/to/your/terraform/file.tf -o text -f terraform
+    # python3 main.py -i path/to/your/kubernetes/manifests -f kubernetes -cf "--skip-check CKV_K8S_41"
     main()
