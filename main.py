@@ -42,6 +42,10 @@ def main(iac_path, output_format, severity, framework, checkov_flags):
         # Build the Checkov command
         command = [
             "checkov",
+            # Checkov takes -d for a directory and -f for a single file, so the
+            # flag is chosen by what the path is, not by what the user said. A
+            # path that is neither, a broken symlink for instance, is sent as a
+            # file and fails inside Checkov.
             "-d" if os.path.isdir(iac_path) else "-f", iac_path,  # Handle both files and directories
             "--framework", framework,
             "--severity", severity,
@@ -49,6 +53,10 @@ def main(iac_path, output_format, severity, framework, checkov_flags):
         ]
 
         if checkov_flags:
+            # Extra flags are split on whitespace, with no quoting rules. A flag
+            # value that legitimately contains a space, such as a quoted skip
+            # list, arrives at Checkov as several arguments and will not do what
+            # the user typed.
             command.extend(checkov_flags.split())
 
         logging.debug(f"Checkov command: {' '.join(command)}")
@@ -61,6 +69,10 @@ def main(iac_path, output_format, severity, framework, checkov_flags):
         # report in the requested format, not a failure dump.
         if output_format == 'json':
             try:
+                # When the JSON does not parse, the raw stdout is printed instead of
+                # failing. Checkov writes progress and warnings into its output often
+                # enough that strictness here would hide real reports. The cost is
+                # that a json run can emit text that is not JSON at all.
                 json_output = json.loads(result.stdout)
                 print(json.dumps(json_output, indent=2))  # Pretty print JSON
             except json.JSONDecodeError as e:
@@ -76,6 +88,10 @@ def main(iac_path, output_format, severity, framework, checkov_flags):
         # Checkov return code, so findings and scanner errors gate.
         if result.returncode != 0:
             logging.error(f"Checkov exited with code {result.returncode}; its report is printed above.")
+            # Checkov's exit code becomes this wrapper's, unmapped. Findings and
+            # scanner errors can share a code, so a caller gating on the number
+            # alone cannot tell a dirty scan from a broken one; the printed report
+            # and the stderr log carry that distinction.
             sys.exit(result.returncode)
 
         logging.info("Checkov analysis completed successfully.")
